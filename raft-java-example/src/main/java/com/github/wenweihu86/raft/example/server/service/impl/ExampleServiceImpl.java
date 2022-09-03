@@ -19,6 +19,10 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Created by wenweihu86 on 2017/5/9.
+ *
+ * get(key): 就直接从 StateMachine 中通过 key 获取 value 即可
+ *
+ * set(key, value):
  */
 public class ExampleServiceImpl implements ExampleService {
 
@@ -37,6 +41,8 @@ public class ExampleServiceImpl implements ExampleService {
     }
 
     private void onLeaderChangeEvent() {
+        // set请求发过来，但本server不是leader的时候先调本方法
+        //
         if (raftNode.getLeaderId() != -1
                 && raftNode.getLeaderId() != raftNode.getLocalServer().getServerId()
                 && leaderId != raftNode.getLeaderId()) {

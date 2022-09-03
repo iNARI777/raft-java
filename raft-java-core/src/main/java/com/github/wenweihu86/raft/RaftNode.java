@@ -203,6 +203,8 @@ public class RaftNode {
         try {
             long firstLogIndex = raftLog.getFirstLogIndex();
             if (peer.getNextIndex() < firstLogIndex) {
+                // 如果要向follower同步的下一条日志已经不在leader的segmentLog中了
+                // 则需要向follower同步snapshot
                 isNeedInstallSnapshot = true;
             }
         } finally {
@@ -300,7 +302,9 @@ public class RaftNode {
             LOG.error("can't be happened");
             return;
         }
+
         if (currentTerm < newTerm) {
+            // 任期落后，退回 Follower
             currentTerm = newTerm;
             leaderId = 0;
             votedFor = 0;
@@ -434,6 +438,9 @@ public class RaftNode {
         if (electionScheduledFuture != null && !electionScheduledFuture.isDone()) {
             electionScheduledFuture.cancel(true);
         }
+
+        // 如果到了选举超时定时器设定的时间，就会执行run中的选举流程
+        // 一般在到达这个时间之前，这个future就被cancel了，不会执行选举
         electionScheduledFuture = scheduledExecutorService.schedule(new Runnable() {
             @Override
             public void run() {

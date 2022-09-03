@@ -110,14 +110,19 @@ public class RaftConsensusServiceImpl implements RaftConsensusService {
             if (request.getTerm() < raftNode.getCurrentTerm()) {
                 return responseBuilder.build();
             }
+            // 因为appendEntries只有follower会执行，所以stepDown中将自己的角色重新设置为follower也没事
+            // 这里起到的主要作用就是重置选举超时时间计时器
             raftNode.stepDown(request.getTerm());
+
             if (raftNode.getLeaderId() == 0) {
+                // 如果当前没有leader（选举中），则将日志append的发送方设为leader
                 raftNode.setLeaderId(request.getServerId());
                 LOG.info("new leaderId={}, conf={}",
                         raftNode.getLeaderId(),
                         PRINTER.printToString(raftNode.getConfiguration()));
             }
             if (raftNode.getLeaderId() != request.getServerId()) {
+                // 如果leader发生了变化
                 LOG.warn("Another peer={} declares that it is the leader " +
                                 "at term={} which was occupied by leader={}",
                         request.getServerId(), request.getTerm(), raftNode.getLeaderId());
@@ -128,6 +133,7 @@ public class RaftConsensusServiceImpl implements RaftConsensusService {
             }
 
             if (request.getPrevLogIndex() > raftNode.getRaftLog().getLastLogIndex()) {
+                // follower的日志落后了，直接返回失败
                 LOG.info("Rejecting AppendEntries RPC would leave gap, " +
                         "request prevLogIndex={}, my lastLogIndex={}",
                         request.getPrevLogIndex(), raftNode.getRaftLog().getLastLogIndex());
@@ -136,6 +142,8 @@ public class RaftConsensusServiceImpl implements RaftConsensusService {
             if (request.getPrevLogIndex() >= raftNode.getRaftLog().getFirstLogIndex()
                     && raftNode.getRaftLog().getEntryTerm(request.getPrevLogIndex())
                     != request.getPrevLogTerm()) {
+                // 自己的最新的日志和leader的上一条日志的任期不同
+                // 告诉leader自己的日志需要回溯1条
                 LOG.info("Rejecting AppendEntries RPC: terms don't agree, " +
                         "request prevLogTerm={} in prevLogIndex={}, my is {}",
                         request.getPrevLogTerm(), request.getPrevLogIndex(),
@@ -146,25 +154,31 @@ public class RaftConsensusServiceImpl implements RaftConsensusService {
             }
 
             if (request.getEntriesCount() == 0) {
+                // 处理心跳
                 LOG.debug("heartbeat request from peer={} at term={}, my term={}",
                         request.getServerId(), request.getTerm(), raftNode.getCurrentTerm());
                 responseBuilder.setResCode(RaftProto.ResCode.RES_CODE_SUCCESS);
                 responseBuilder.setTerm(raftNode.getCurrentTerm());
                 responseBuilder.setLastLogIndex(raftNode.getRaftLog().getLastLogIndex());
+                // 对部分旧的日志进行commit
                 advanceCommitIndex(request);
                 return responseBuilder.build();
             }
 
+            // append日志到本地segment log中
             responseBuilder.setResCode(RaftProto.ResCode.RES_CODE_SUCCESS);
             List<RaftProto.LogEntry> entries = new ArrayList<>();
             long index = request.getPrevLogIndex();
             for (RaftProto.LogEntry entry : request.getEntriesList()) {
                 index++;
                 if (index < raftNode.getRaftLog().getFirstLogIndex()) {
+                    // todo 为什么会有这种情况？
                     continue;
                 }
                 if (raftNode.getRaftLog().getLastLogIndex() >= index) {
+                    // 当前节点append的位置是超前的
                     if (raftNode.getRaftLog().getEntryTerm(index) == entry.getTerm()) {
+                        // 任期一样，跳过本条
                         continue;
                     }
                     // truncate segment log from index
