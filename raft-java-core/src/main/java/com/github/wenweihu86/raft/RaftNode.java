@@ -235,8 +235,10 @@ public class RaftNode {
             prevLogIndex = peer.getNextIndex() - 1;
             long prevLogTerm;
             if (prevLogIndex == 0) {
+                // 系统刚启动
                 prevLogTerm = 0;
             } else if (prevLogIndex == lastSnapshotIndex) {
+                // 刚做完install snapshot
                 prevLogTerm = lastSnapshotTerm;
             } else {
                 prevLogTerm = raftLog.getEntryTerm(prevLogIndex);
@@ -245,7 +247,9 @@ public class RaftNode {
             requestBuilder.setTerm(currentTerm);
             requestBuilder.setPrevLogTerm(prevLogTerm);
             requestBuilder.setPrevLogIndex(prevLogIndex);
+            // 看follower落后多少，将相应index开始的日志打包发送给follower
             numEntries = packEntries(peer.getNextIndex(), requestBuilder);
+            // 如果follower落后的不多一次追过commitIndex了，那么就用index；落后太多没追回来就用后者
             requestBuilder.setCommitIndex(Math.min(commitIndex, prevLogIndex + numEntries));
         } finally {
             lock.unlock();
@@ -257,6 +261,7 @@ public class RaftNode {
         lock.lock();
         try {
             if (response == null) {
+                // 认为 follower 已经挂了
                 LOG.warn("appendEntries with peer[{}:{}] failed",
                         peer.getServer().getEndpoint().getHost(),
                         peer.getServer().getEndpoint().getPort());
@@ -272,6 +277,7 @@ public class RaftNode {
                     response.getTerm(), currentTerm);
 
             if (response.getTerm() > currentTerm) {
+                // 自己已经不是 leader 了
                 stepDown(response.getTerm());
             } else {
                 if (response.getResCode() == RaftProto.ResCode.RES_CODE_SUCCESS) {

@@ -173,25 +173,33 @@ public class RaftConsensusServiceImpl implements RaftConsensusService {
                 index++;
                 if (index < raftNode.getRaftLog().getFirstLogIndex()) {
                     // todo 为什么会有这种情况？
+                    // leader的日志远落后于本机存储的第一条日志，直接下一条
                     continue;
                 }
                 if (raftNode.getRaftLog().getLastLogIndex() >= index) {
                     // 当前节点append的位置是超前的
                     if (raftNode.getRaftLog().getEntryTerm(index) == entry.getTerm()) {
                         // 任期一样，跳过本条
+                        // 这种情况可能由网络波动造成，leader上一轮已经发过第n条日志，本机也收到了，
+                        // 但是本机的返回结果没有到达leader，所以leader下一轮会将n和n+1一起发过来
+                        // 但这时候本机已经有n了，跳过即可
                         continue;
                     }
                     // truncate segment log from index
+                    // 如果leader发来的新的index落后于本机的index，以新index为准
+                    // 把本机超前的日志都删掉
                     long lastIndexKept = index - 1;
                     raftNode.getRaftLog().truncateSuffix(lastIndexKept);
                 }
                 entries.add(entry);
             }
+            // 将新日志添加到本机日志最后
             raftNode.getRaftLog().append(entries);
 //            raftNode.getRaftLog().updateMetaData(raftNode.getCurrentTerm(),
 //                    null, raftNode.getRaftLog().getFirstLogIndex());
             responseBuilder.setLastLogIndex(raftNode.getRaftLog().getLastLogIndex());
 
+            // 对部分旧的日志进行commit
             advanceCommitIndex(request);
             LOG.info("AppendEntries request from server {} " +
                             "in term {} (my term is {}), entryCount={} resCode={}",

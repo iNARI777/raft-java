@@ -1,0 +1,65 @@
+Raft
+
+读数据
+直接从 StateMachine 中通过 key 读出 value 返回即可
+
+写数据
+1. 判断自己是不是 Leader：
+	a) 如果还没有 leader 则直接失败
+	b) 自己不是 Leader 则将写请求转发给 Leader
+	c) 自己是 Leader 则执行 raplicate 进行 log 的添加和广播
+2. replicate 日志
+	a) 拷贝日志之前就已经将 entry 写到了 segment log 中，写之前会看当前最后一个日志文件是否已经到达限制的大小，如果到了则新开一个文件再 append log
+	b) 异步地向所有 Peer 发送 appned log 命令（具体过程见下）
+	c) 等待 lastAppliedIndex 追上 newLastLogIndex（应该是有另外一个任务一直在刷 lastAppliedIndex）
+
+append log 命令执行
+Leader 中：
+1. 检查每个 follower 已经同步到哪个 index 了，如果 follower 同步的比较慢导致 follower 的同步进度小于了 leader 的第 1 条本地日志，那么就需要 install snapshot 到 follower
+2. 向 request 中填充：
+	a) serverId: leader 的 server 编号
+	b) term: leader 的当前任期
+	c) prevLogTerm: 前一条日志的任期
+	d) prevLogIndex: 前一条日志的 index
+	e) commitIndex: leader 已经 commit 的日志的 index
+	f) entries: 要执行的指令集合
+3. 发送 appendEntries 请求
+
+Follower 中：
+1. 请求中的 term 如果小于当前自己的 term，则直接返回失败
+2. 重置选举计时器
+3. 如果 leader 变了，则重置自己的任期，并返回失败
+4. 发现自己的日志落后于 request 中的前一条日志的日志号，直接返回失败
+5. 如果 request 中前一条日志的日志号和本机最后一条日志号不等，返回失败，并告诉 leader 自己需要往前回溯一条
+6. 如果 request 中没有 entry 则说明这是一条心跳，心跳 request 中有上一条 commit 的日志的 index，follower 会将自己的 lastAppliedIndex + 1 到 request 中 commitId 之间的 entry 都 apply 到 state machine 中（advanceCommitIndex for follower）：
+	a) 对于数据操作的 entry：直接 apply 到状态机中
+	b) 对于 configuration 变化（节点成员变化）的 entry：对 raftNode 中 raft 组成员进行 update（被下掉的成员会因为收不到 leader 的心跳开始选举流程，此时其他 server 会响应吗？看看选举那块的流程）
+	?) 这个时候是没有将已经应用的日志删掉的，那么
+7. 将日志 append 到本地：
+	a) 如果 request 中日志的 index 落后于本机存储的第一条日志，则直接跳过本条日志（感觉这样处理不对啊！）
+	b) 如果 request 中日志的 index 落在本机日志 index 的中间值，那么删除本机日志这个 index 后的所有日志
+	c) 和 leader 一样走本地日志 append 逻辑
+	d) 和处理心跳一样将日志应用到状态机中
+8. 返回本地最后一条 log 的 index（并没有关心 commitIndex，说明所有节点只通过日志就可以恢复到正常状态）
+
+Leader 中：
+（appendEntries 中）
+1. 如果 follower 返回为空，则认为机器已经挂掉了，从自己的 peer 列表中将这台机器剔除，并关闭与其通信的 rpc 链接
+2. 如果 follower 返回的 term 大于自己，那么直接 stepDown，退回 follower
+3. 更新本地 peer 记录，matchIndex 和 nextIndex
+4. 进行 commit（advanceCommitIndex for leader）：
+	a) 如果当前处理的 follower 在自己的 server 列表中，则进行 commit
+	b) 如果不在，说明这个 peer 是新加进来的正在追赶日志的，如果这时其日志已经追上来或快追上来了，则将其状态设置为“catchup”（执行 addPeer 的线程此时会被唤起，将这个 peer 加入 server 列表中）
+（replicate 中）
+5. 看当前的 lastAppliedIndex 有没有追上最新的日志的 index，追上了则返回成功；没追上则等一会，如果超过设置的 timeout 后仍然没追上则返回失败；超时结束后追上了则返回成功。
+
+
+install snapshot
+
+
+advanceCommitIndex for leader（多数派返回成功的逻辑应该在这里，并且当前看起来是来一个请求就需要 commit 一次）
+
+
+选举
+
+
